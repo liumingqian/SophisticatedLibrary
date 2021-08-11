@@ -20,7 +20,7 @@ Unreal使用 -256 到 255.992 (cm)之间的值计算高度图的高度，并以 
 
 编辑器中在对weightmap修改后，系统会做一个简单的判断，如果发现该层的权重值都变为零时，就把当前层移除掉。接着它会更新这个component的材质实例，根据当前的layer的使用情况生成对应的shader变体，假如有新的一层添加进来也会做同样的处理。
 
-grasstype：https://www.youtube.com/watch?v=wE2_CKG6vRQ
+[grasstype](https://www.youtube.com/watch?v=wE2_CKG6vRQ)
 
 ### 地形草
 
