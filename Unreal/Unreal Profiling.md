@@ -48,6 +48,14 @@ mesh drawcall
 
 **stat Particles**
 
+**stat Foliage**
+
+地形草相关的stat也在里面，详细可看LandscapeGrass.cpp开头
+
+**stat landscape**
+
+**stat SlateUI**
+
 **stat Streaming/stat StreamingDetails**
 
 光照图、静态纹理、动态纹理等纹理流送情况
