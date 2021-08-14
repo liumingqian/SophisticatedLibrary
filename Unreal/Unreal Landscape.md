@@ -232,7 +232,7 @@ render setmesh draw time
 
 CreateOccluderIndexBuffer
 
-### Grass
+### Landscape Grass
 
 每个landscape component都分配了一个专属的hism。如果某个landscape component不能生成草的实例，那么就不会创建hism。grass的hism是在游戏运行时构建的，并不会序列化到资产文件里。所以每帧系统都会轮询世界中所有的landscapeproxy，判断landscapeproxy中的每一个landscape component是否在预设的渲染范围之内。如果这个在范围之内的component没有创建过hism，就会开启一个异步任务用来构建hism的cluster tree，并且形成对应的instance buffer。每个instance的位置会重新进行随机，但是为了保证随机的一致性，构建时使用的随机种子都是和landscape component一一对应的，所以同个位置上的hism里的instance每次重新生成，都会出现在一模一样的地方。grass data里并没有记录着instance的信息，只是grass type相关的weightmap和heightmap，weightMap帮助确定instance的位置，heightmap帮助instance对齐地形表面的高度和斜率。
 
@@ -244,17 +244,27 @@ ALandscapeProxy::TickGrass
 ALandscapeProxy::UpdateGrass
 ```
 
-#### 草的生成
+#### 草HISM生成
 
 地形草在ALandscapeProxy::UpdateGrass函数中会从LandscapeComponent的MeshMapBuildData中取出地形的Lightmap和ShadowMap并赋给草的HISM的OverrideMapBuildData。
 
 相机位置发生改变且草没有缓存的时候（具体调用时机不清楚）会异步的调用FAsyncGrassBuilder::Build，选择用Halton算法或jitter方法（命令行可配置）生成GrassHISM。FAsyncGrassBuilder中保存草的权重信息的是GrassData（FLandscapeComponentGrassAccess）。
 
-对于Jitter方法（目前p6的方法），相当于把地形分为SqrtMaxInstance*SqrtManInstance个格子，在每个格子上根据位置采样GrassData中的Height和Weight信息进行双线性插值，如果Weight和Random情况满足需求，则
+对于Jitter方法（目前p6的方法），首先分配一个Instances数组（TArray<FInstanceLocal>），大小为SqrtMaxInstance*SqrtManInstance。相当于把地形分为SqrtMaxInstance*SqrtManInstance个格子，遍历每个格子位置，根据位置采样GrassData中的Height和Weight信息进行双线性插值，如果Weight和Random情况满足需求，则该Instance设置为有草的。随后第二次遍历Instances数组，随机旋转和Scale，生成InstanceTransform数组。将InstanceTransform数组提交给UHierarchicalInstancedStaticMeshComponent::BuildTreeAnyThread，进行HISM的构建。最终生成的草的数据会填充FStaticMeshInstanceData。
 
-ES3.1以上会通过CreateGrassIndexBuffer创建一个草的IndexBuffer。
+- 进Build之前应该有判断？
+
+PIE模式下FLandscapeSharedBuffers构造时，会通过CreateGrassIndexBuffer创建一个草的IndexBuffer。FLandscapeComponentSceneProxy::CreateRenderThreadResources中也是将这个indexBuffer提交到GrassMeshBatch的。（运行时怎么做的，为什么不同？？）
+
+#### 渲染
+
+ALandscapeProxy::UpdateGrass
+
+
 
 草为什么提了那么多drawcall？
+
+ALandscapeProxy::BuildGrassMaps？？
 
 -grass.CullSubsections？
 
