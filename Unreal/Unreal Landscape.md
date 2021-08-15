@@ -12,24 +12,14 @@ Edit layers需要在Details面板打开Enable edit layers。
 
 Unreal使用 -256 到 255.992 (cm)之间的值计算高度图的高度，并以 16 位精度存储，然后将该值乘以地形的Scale.Z
 
-#### 地形混合
-
-- 基于权重：每个layer的颜色直接乘以该层权重值，然后再依次把所有算好的颜色值叠加一起
-- 基于Height：在每层原始权重的基础上再叠加上一个来自与颜色图匹配的高度图的灰度值，后面会做个重新的归一化，这样就能保证输出的颜色亮度不会超过颜色纹理中的最高亮度。由于Weightmap分辨率只能与顶点数保持一致，这种混合方法比较能提升混合的细节。
-- 基于Alpha：依照顺序逐层进行线性插值
-
-编辑器中在对weightmap修改后，系统会做一个简单的判断，如果发现该层的权重值都变为零时，就把当前层移除掉。接着它会更新这个component的材质实例，根据当前的layer的使用情况生成对应的shader变体，假如有新的一层添加进来也会做同样的处理。
-
-[grasstype](https://www.youtube.com/watch?v=wE2_CKG6vRQ)
-
-### 编辑
+### 地形编辑
 
 地形编辑器主要逻辑在LandscapeEdit.cpp。编辑时每个Component的数据存储在 ULandscapeComponent::PlatformData中。PlatformData是压缩的顶点数据，其中存储的顶点数据格式是FLandscapeMobileVertex，每个顶点对应一个FLandscapeMobileVertex：
 
 ```cpp
 struct FLandscapeMobileVertex
 {
-	uint8 Position[4]; //x,y，所在Section在Component内的坐标，挖洞的信息
+	uint8 Position[4]; //x,y，所在Section在Component内的坐标（(SubX << 4) | SubY），挖洞的信息
 	uint8 LODHeights[LANDSCAPE_MAX_ES_LOD_COMP*4];//0和1存储所有LOD高度中的最大最小值（抛弃掉了uint16的低八位），各个LOD的高度归一化到最大最小高度范围内，存储到LODHeights[2+Mip]中。
 };
 ```
@@ -40,13 +30,23 @@ ULandscapeComponent::GeneratePlatformVertexData为Mobile生成了PlatformData，
   MobileWeightmapTextures??
   ```
 
-### RHI数据创建和索引
+#### 地形混合方式
+
+- 基于权重：每个layer的颜色直接乘以该层权重值，然后再依次把所有算好的颜色值叠加一起
+- 基于Height：在每层原始权重的基础上再叠加上一个来自与颜色图匹配的高度图的灰度值，后面会做个重新的归一化，这样就能保证输出的颜色亮度不会超过颜色纹理中的最高亮度。由于Weightmap分辨率只能与顶点数保持一致，这种混合方法比较能提升混合的细节。
+- 基于Alpha：依照顺序逐层进行线性插值
+
+编辑器中在对weightmap修改后，系统会做一个简单的判断，如果发现该层的权重值都变为零时，就把当前层移除掉。接着它会更新这个component的材质实例，根据当前的layer的使用情况生成对应的shader变体，假如有新的一层添加进来也会做同样的处理。
+
+### 地形数据
+
+总的来讲地形的信息都是编辑后保存时序列化到磁盘上，渲染时反序列化出来（PlatformData)使用。
 
 PC使用顶点纹理来有效地存储高度和法线数据并计算 LOD 过渡，移动设备使用固定顶点和索引缓冲区。
 
 #### VertexData
 
-##### SharedBuffer
+**SharedBuffer**
 
 移动端地形运行时渲染数据由FLandscapeComponentSceneProxy::CreateRenderThreadResources()创建，填充在FLandscapeSharedBuffers里。FLandscapeSharedBuffers中包含了
 
@@ -64,7 +64,7 @@ SharedBuffersKey只由SubsectionSizeQuads、NumSubsections唯一确定，因为�
 
 <img src="Unreal Landscape.assets/vertex_order_section2x2.png" alt="Component内顶点的排列方式2x2" style="zoom:50%;" />
 
-##### index buffer
+**index buffer**
 
 FLandscapeSharedBuffers::CreateIndexBuffers生成了IndexBuffer。ES3.1下根据Fortyth算法进行了[Post Transform Cache](https://www.khronos.org/opengl/wiki/Post_Transform_Cache)的优化，并且在LOD间共用了顶点以节省内存。
 
@@ -75,7 +75,7 @@ FLandscapeSharedBuffers::CreateIndexBuffers生成了IndexBuffer。ES3.1下根据
 - 创建了RHI Index buffer: `RHICreateIndexBuffer` -> `glBufferData`，这里的实现就是创建一个buffer对象来保存index
 - 创建了SRV(Shader Resource View): `RHICreateShaderResourceView` -> `glGenTextures`、`glTexBuffer`/`glTexBufferRange`。
 
-##### vertex buffer
+**vertex buffer**
 
 FLandscapeComponentSceneProxy::CreateRenderThreadResources中创建了FLandscapeVertexFactoryMobile（如果使用VirtualTexture，会创建FLandscapeFixedGridVertexFactoryMobile）。ULandscapeComponent的PostLoad中，ULandscapeComponent::GeneratePlatformVertexData从Heightmap生成了PlatformData，以压缩形式保存。FLandscapeVertexFactoryMobile中的数据在CreateRenderThreadResources的时候用反序列化PlatformData得到的MobileRenderData中的VertexData填充。FLandscapeVertexFactoryMobile中最主要的数据是FDataType，FDataType在PC上的定义是
 
@@ -100,7 +100,7 @@ FVertexStreamComponent是一个保存了databuffer指针，以及data的offset�
 
 创建的LandscapeVertexFactory会保存在Proxy内，实际渲染时使用。
 
-##### uniform buffer
+**uniform buffer**
 
 LOD Uniform参数主要存在FLandscapeSectionLODUniformParameters里，对应shader中的LandscapeContinuousLODParameters。定义为：
 
@@ -115,47 +115,35 @@ BEGIN_GLOBAL_SHADER_PARAMETER_STRUCT(FLandscapeSectionLODUniformParameters, )
 END_GLOBAL_SHADER_PARAMETER_STRUCT()
 ```
 
-这些Uniform参数在FLandscapeRenderSystem::RecreateBuffers中赋值。
+这些Uniform参数每帧在FLandscapeRenderSystem::RecreateBuffers中向Render线程中的内存拷贝。
 
 #### Pixel Data
 
 在PostEditChangeProperty中调用了ULandscapeComponent::GeneratePlatformPixelData，因为更换材质可能涉及WeightMap的重新排布。
 
-##### WeightMapTexture
+**WeightMapTexture**
 
-ULandscapeComponent::GeneratePlatformPixelData中创建了一张RGBA8格式的WeightMapTexture，从Heightmap的zw通道中拷贝了Normal信息放在WeightMapTexture的zw通道。根据当前Component Layer使用的情况填充WeightMap的通道，创建一张或两张WeightMap
+ULandscapeComponent::GeneratePlatformPixelData中创建了一张RGBA8格式的WeightMapTexture，从Heightmap的zw通道中拷贝了Normal信息放在WeightMapTexture的zw通道。根据当前Component Layer使用的情况填充WeightMap的通道，创建一张或多张WeightMap。如果挖洞，Visibility信息可能也会保存在WeightMap中。
 
-##### NormalMapTexture
+**NormalMapTexture**
 
 NormalMapTexture在PC上和Heightmap的值一样，在Shader里采样的是Heightmap的zw通道。Mobile上是MobileWeightmapTextures[0]。
 
-#### GIBakedBaseColorTexture
+**GIBakedBaseColorTexture**
 
 开启Generate Mesh Distance Field和Generate Landscape Real-time GI Data的时候由系统生成，不能手动赋值。PerComponent一张图，分辨率非常低。
 
-#### 材质
+#### OccluderMesh
 
-所有componentsection共用一个材质么？LOD材质怎么替换
+应该是生成了一个用于软光栅剔除其他Mesh的LODMesh。
 
-### 渲染
+在GeneratePlatformVertexData里用第一级Lod（具体使用哪级可以在ALandscape的Occluder Geometry LOD属性中配置）的顶点position填充了occluderVertices，应该也是序列化到PlatformData里，创建FLandscapeMobileRenderData的时候，从PlatformData里反序列化出来，保存到了MobileRenderData.OccluderVerticesSP。随后FLandscapeComponentSceneProxyMobile::CreateRenderThreadResources中，创建FLandscapeSharedBuffers的时候生成了OccluderVertices的indices信息，保存在FLandscapeSharedBuffers::OccluderIndicesSP中。
 
-```cpp
-//主线程渲染循环
-FMobileSceneRenderer::Render
-FMobileSceneRenderer::InitViews
-FPersistentUniformBuffers::UpdateViewUniformBuffer
-FLandscapePersistentViewUniformBufferExtension::BeginRenderView
-FLandscapeRenderSystem::BeginRenderView
-FLandscapeRenderSystem::RecreateBuffers
-    
-//渲染线程
-FMeshDrawCommandPassSetupTask::AnyThreadTask
-GenerateDynamicMeshDrawCommands
-FMeshPassProcessor::BuildMeshDrawCommands
-FLandscapeVertexFactoryMobileVertexShaderParameters::GetElementShaderBindings//在这里传递UniformBuffer参数
-```
+### 地形渲染
 
+加载场景调用FPrmitiveSceneInfo::AddStaticMeshes后调用了FLandscapeComponentSceneProxy::DrawStaticElements，从FirstLOD（可根据平台或硬件进行配置）到LastLOD分别调用FLandscapeComponentSceneProxy::GetStaticMeshElement生成MeshBatch。（相关Stat统计也发生在这里）
 
+FLandscapeRenderSystem是一个工作在Render线程的数据结构，主要是被FLandscapePersistentViewUniformBufferExtension调用，更新Lod相关的UniformBuffer数据。FLandscapePersistentViewUniformBufferExtension是一个继承IPersistentViewUniformBufferExtension的UB扩展，在FMobileSceneRenderer中，会调用Scene->UniformBuffers.UpdateViewUniformBuffer，遍历所有UB扩展执行BeginRenderView函数，进行UB数据更新。FLandscapeRenderSystem在RecreateBuffer中将ComputeSectionPerViewParameters异步计算好的数据拷到UniformBuffer中。
 
 #### 顶点着色器
 
@@ -184,11 +172,19 @@ vertexPosition = lerp(
             MorphAlpha);
 ```
 
+CalcLOD方法以在Section内归一化的坐标xy，计算当前点向上下左右四个块的LOD的插值。以两条对角线将正方形的Section分割为4块的话，可以通过xy的值判断当前点属于哪一块，据此返回计算的LOD的值。
+
+#### 材质
+
+Components共用一个材质。地形没有材质LOD，通过地形LOD、World Composition和Level LOD减少性能
 
 
-### LOD
 
-lod数是SubsectionSizeQuads以2为底的对数，即如果15*15个Quads构成一个section，NumLod为log(2,16)=4。
+FLandscapeComponentMaterialOverride?
+
+#### LOD
+
+lod数是SubsectionSizeQuads以2为底的对数，即如果15*15个Quads构成一个section，NumLod为log(2,16)=4。这个值作为MaxLod值，在FLandscapeComponentSceneProxy构造时就写好了，
 
 LOD参数在ALandscape的Detail窗口中指定：
 
@@ -199,99 +195,144 @@ LOD参数在ALandscape的Detail窗口中指定：
 
 移动平台应该是支持PLATFORM_SUPPORTS_LANDSCAPE_VISUAL_MESH_LOD_STREAMING的
 
-FLandscapeRenderSystem中的SectionLODSettings为每个Section保存了一个LODSettingsComponent。FLandscapeRenderSystem::ComputeSectionPerViewParameters中根据SectionLODSettings、ScreenSize和LODScale计算FractionalLOD，最后将所有Section的LOD值作为一个数组存在CachedSectionLODValues中。最终保存到上面的Uniform Buffer中FLandscapeSectionLODUniformParameters::SectionLOD。在shader中需要获取相邻SectionLOD的数据，知道Section的坐标，也就能通过偏移拿到相邻Section的LOD了。
-
-
+FLandscapeRenderSystem中的SectionLODSettings为每个Section保存了一个LODSettingsComponent，主要是ForceLOD、LOD0和1的ScreenSize等信息，LODSettingsComponent是在CreateRenderThreadResource时，在FLandscapeRenderSystem::RegisterEntity中填充的。FLandscapeRenderSystem::ComputeSectionPerViewParameters（由FMobileSceneRenderer::InitViews异步调用）中根据SectionLODSettings、ScreenSize和LODScale计算FractionalLOD，最后将所有Section的LOD值作为一个数组存在CachedSectionLODValues中。最终保存到上面的Uniform Buffer中FLandscapeSectionLODUniformParameters::SectionLOD。在shader中需要获取相邻SectionLOD的数据，知道Section的坐标，也就能通过偏移拿到相邻Section的LOD了。
 
 > 配置项
 >
 > - MobileLodBias：移动端的lod bias
 > - MobileLandscapeLodBias：可以运行时根据特定设备执行额外偏差
 
-### 剔除
+#### 剔除
 
-有视锥剔除，开着软光栅的话也是能剃掉自己的。将地形的Occluder Geometry Lod设为0以上就行
+有视锥剔除，开着软光栅的话也是能剃掉自己的（切换pc/es3.1，用freezerendering能看出来），将地形的Occluder Geometry Lod设为0以上就行
 
 并不是预计算可视性volume能剃掉的东西。。可能因为Landscape被认为是动态物体
 
-
-
-#### OccluderMesh
-
-应该是生成了一个用于软光栅剔除其他Mesh的LODMesh。
-
-在GeneratePlatformVertexData里用第一级Lod（具体使用哪级可以在ALandscape的Occluder Geometry LOD属性中配置）的顶点position填充了occluderVertices，应该也是序列化到PlatformData里，创建FLandscapeMobileRenderData的时候，从PlatformData里反序列化出来，保存到了MobileRenderData.OccluderVerticesSP。随后FLandscapeComponentSceneProxyMobile::CreateRenderThreadResources中，创建FLandscapeSharedBuffers的时候生成了OccluderVertices的indices信息，保存在FLandscapeSharedBuffers::OccluderIndicesSP中。
-
-
-
-渲染顺序？
-
 render setmesh draw time
-
-
 
 CreateOccluderIndexBuffer
 
-### Grass
+### 地形草
 
-每个landscape component都分配了一个专属的hism。如果某个landscape component不能生成草的实例，那么就不会创建hism。grass的hism是在游戏运行时构建的，并不会序列化到资产文件里。所以每帧系统都会轮询世界中所有的landscapeproxy，判断landscapeproxy中的每一个landscape component是否在预设的渲染范围之内。如果这个在范围之内的component没有创建过hism，就会开启一个异步任务用来构建hism的cluster tree，并且形成对应的instance buffer。每个instance的位置会重新进行随机，但是为了保证随机的一致性，构建时使用的随机种子都是和landscape component一一对应的，所以同个位置上的hism里的instance每次重新生成，都会出现在一模一样的地方。grass data里并没有记录着instance的信息，只是grass type相关的weightmap和heightmap，weightMap帮助确定instance的位置，heightmap帮助instance对齐地形表面的高度和斜率。
+地形草的hism是在游戏运行时构建的，并不会序列化到资产文件里。LandscapeComponent::PostLoad时序列化出来的是GrassData(FLandscapeComponentGrassData)，只保存最基本的地形的HeightMapMip和Weightmap，并不保存Instance信息。weightMap帮助确定instance的位置，heightmap帮助instance对齐地形表面的高度和斜率。GrassData在保存地形编辑结果时(ALandscapeProxy::PreSave)，通过调用ALandscapeProxy::BuildGrassMaps生成了GrassData的HeightMip和WeightMap。
 
 [Unreal Engine的地形草管理系统的缺陷分析报告](https://zhuanlan.zhihu.com/p/149771853)
 
-```
+#### 草HISM生成
+
+```cpp
+//update grass调用堆栈
 ULandscapeSubsystem::Tick
 ALandscapeProxy::TickGrass
 ALandscapeProxy::UpdateGrass
 ```
 
-#### 草的生成
+ULandscapeSubsystem的Tick遍历所有LandscapeProxy，并根据Landscape的Material里有没有Grass节点，来判断是否需要给Tick Grass。草的HISM由ALandscapeProxy::TickGrass调用ALandscapeProxy::UpdateGrass来更新，生成一个数据结构FCachedLandscapeFoliage::FGrassComp来保存草Hism相关信息，FCachedLandscapeFoliage::FGrassComp最终缓存在ALandscapeProxy的FoliageCache（类型是FCachedLandscapeFoliage，Transient）中。
 
-地形草在ALandscapeProxy::UpdateGrass函数中会从LandscapeComponent的MeshMapBuildData中取出地形的Lightmap和ShadowMap并赋给草的HISM的OverrideMapBuildData。
+UpdateGrass时首先对所有的LandscapeComponent，按包围盒到相机的距离排序，排除超出草的最大剔除距离的地形块。然后遍历所有GrassType的所有GrassVariety，为每种GrassVariety生成一个FCachedLandscapeFoliage::FGrassComp。FGrassComp中BasedOn landscapeComponent、GrassType、SubsectionX/Y、VarietyIndex等信息Hash为了FGrassCompKey，作为在ALandscapeProxy::FoliageCache中查找缓存的索引。如果有缓存就跳过Hism的Build过程。
 
-相机位置发生改变且草没有缓存的时候（具体调用时机不清楚）会异步的调用FAsyncGrassBuilder::Build，选择用Halton算法或jitter方法（命令行可配置）生成GrassHISM。FAsyncGrassBuilder中保存草的权重信息的是GrassData（FLandscapeComponentGrassAccess）。
+如果没有缓存，创建新的UHierarchicalInstancedStaticMeshComponent和FAsyncGrassBuilder，创建一个FAsyncGrassTask，异步的调用FAsyncGrassBuilder::Build。由于构建时使用的随机种子是根据landscape component Hash出的，所以同个位置上的hism每次重新生成instance，都会出现在一模一样的地方。然后，遍历FAsyncGrassTask队列，检查Task如果完成了，则将FAsyncGrassBuilder中生成好的数据填充回HISMComponent。最后，根据GMinTimeToKeepGrass和GMinFramesToKeepGrass判断FoliageCache缓存的所有FGrassComp是否过期，并释放过期的HISMComponent。
 
-对于Jitter方法（目前p6的方法），相当于把地形分为SqrtMaxInstance*SqrtManInstance个格子，在每个格子上根据位置采样GrassData中的Height和Weight信息进行双线性插值，如果Weight和Random情况满足需求，则
+FAsyncGrassBuilder用Halton算法或jitter方法（命令行可配置）生成GrassHISM。FAsyncGrassBuilder中保存草的权重信息的是GrassData（FLandscapeComponentGrassAccess）。对于Jitter方法（目前p6的方法），首先分配一个Instances数组（TArray<FInstanceLocal>），大小为SqrtMaxInstance*SqrtManInstance。相当于把地形分为SqrtMaxInstance*SqrtManInstance个格子，遍历每个格子位置，根据位置采样GrassData中的Height和Weight信息进行双线性插值，如果Weight和Random情况满足需求，则该Instance设置为有草的。随后第二次遍历Instances数组，随机旋转和Scale，生成InstanceTransform数组。将InstanceTransform数组提交给UHierarchicalInstancedStaticMeshComponent::BuildTreeAnyThread，进行HISM的构建。最终生成的草的数据会填充FStaticMeshInstanceData。并在ALandscapeProxy::UpdateGrass遍历FAsyncGrassTask队列时回填到HISM。
 
-ES3.1以上会通过CreateGrassIndexBuffer创建一个草的IndexBuffer。
+PIE模式下FLandscapeSharedBuffers构造时，会通过CreateGrassIndexBuffer创建一个草的IndexBuffer。FLandscapeComponentSceneProxy::CreateRenderThreadResources中也是将这个indexBuffer提交到GrassMeshBatch的。
 
-草为什么提了那么多drawcall？
+#### 渲染
 
--grass.CullSubsections？
+ALandscapeProxy::UpdateGrass函数中从LandscapeComponent的MeshMapBuildData中取出地形的Lightmap和ShadowMap并赋给草的HISM的OverrideMapBuildData。
+
+- GGrassDiscardDataOnLoad？
 
 > 配置项
 >
 > - 可以通过命令行配置的变量见LandscapeGrass.cpp开头
+> - GuardBand是草消失逐渐下去那条带吗
+> - grass.CullSubsections 按SubSection剔除还是按Landscape Component剔除？
 
-landscapeRender和Mobile区别：
+### 地形挖洞
+
+（实际上并不是
+
+在调用FLandscapeComponentSceneProxy::GetStaticMeshElement生成地形MeshBatch的过程中，会调用FLandscapeComponentSceneProxyMobile::ApplyMeshElementModifier，移动端地形在此将MeshElement的模型数据替换成了`HoleData`所描述的含有洞的模型，而PC端是在shader里根据Visibility map，discard pixel来做的。
+
+HoleData（FLandscapeMobileHoleData）是提前生成好序列化起来的，反序列化后保存在FLandscapeComponentSceneProxyMobile::MobileRenderData里。
+
+### 问题
 
 TexCoordOffsetParameter
 
+- xyoffset和Tessellation都是SM4以上的功能
+
 - LANDSCAPE_MAX_ES_LOD_COMP是啥？就是用于存储LOD信息的Vec4的个数
 
-- 动态缓存DrawCommand?
+- 动态缓存DrawCommand?不是，只有选中地形时会通过FHitProxyMeshProcessor缓存DynamicDrawCommand
+
 - 那mobile怎么LOD顶点数？顶点数据是固定的，每个LOD有一个IndexBuffer
+
 - 地形哪里费：TRACE_CPUPROFILER_EVENT_SCOPE？GetElementShaderBindings那就是提一次Drawcall的那种费吧。。
+
 - 地形绘制的drawcall是从哪提出去的：Scene的动态物体列表
+
+- 草为什么提了那么多drawcall？HISM构建的问题
+
+- 但怎么关联草和地形的渲染，难道不会出现地形没画草画了的情况吗？会的。。。
+
+  <img src="Unreal Landscape.assets/image-20210815153931540-16290131776351.png" alt="image-20210815153931540" style="zoom: 25%;" />
+
+- 渲染顺序？无法控制
+
+- 地形lod后草按地形mipmap生成吗?没有，grassData里就保存了一个Heightmap数据，本来草和地形渲染也分开的
+
+- LastLOD能设置吗?不是很行，值的填充在FLandscapeComponentSceneProxy中
+
+- landscapeRendersystem和proxy什麼關係呢
+
+- 为什么每帧都要RecreateBuffers呢
+
+- LODIndexToMaterialIndex?UpdateMaterialInstances_Internal?
+
+- 为什么有个图总是传两遍？
+
+- <img src="Unreal Landscape.assets/image-20210815183552713.png" alt="image-20210815183552713" style="zoom:25%;" />
+
+  
 
 ![image-20210810202826489](E:\文件\SophisticatedLibrary\Unreal\Unreal Landscape.assets\image-20210810202826489.png)
 
-
+//主线程渲染循环
+FMobileSceneRenderer::Render
+FMobileSceneRenderer::InitViews
+FPersistentUniformBuffers::UpdateViewUniformBuffer
+FLandscapePersistentViewUniformBufferExtension::BeginRenderView
+FLandscapeRenderSystem::BeginRenderView
+FLandscapeRenderSystem::RecreateBuffers
+    
+//渲染线程
+FMeshDrawCommandPassSetupTask::AnyThreadTask
+GenerateDynamicMeshDrawCommands
+FMeshPassProcessor::BuildMeshDrawCommands
+FLandscapeVertexFactoryMobileVertexShaderParameters::GetElementShaderBindings//在这里传递UniformBuffer参数
 
 ### p6
 
-- LOD切换：配置感觉挺好的了。但不可达块能不能开ForceLOD？比如ForceLOD2，因为现在的LOD切换配置最远也就差不多LOD2的样子 。尤其雨天场景，有些地形块利用效率很低。Occluder Geometry Lod是否有必要配置？（可能不用，软光栅包围盒而已）
+- LOD切换：配置感觉挺好的了。但不可达块能不能开ForceLOD？比如ForceLOD2，因为现在的LOD切换配置最远也就差不多LOD2的样子 。尤其雨天场景，有些地形块利用效率很低。如果能因此少生成几级lod IndexBuffer就好了，但要改的地方太多了
 
 - drawcall：雨天和新手村都是16个component的地形，drawcall基本在8个或以下，不知道能否再剔除掉一些
 
 - 材质：仿佛不是瓶颈，并且因为占得面积大，并且是瓶颈也没办法
 
-- 草的drawcall数高，簇分的太细了，顶点数也高。每个Component上有个hism，不可达的Component上最好一棵草都不要有。
+- 草的drawcall数高，簇分的太细了（但HISM的建树参数应该是全局的），顶点数也高。每个Component上有个hism，不可达的Component上最好一棵草都不要有。然后在Proxy的ShouldTickGrass上进行更严格的判断。
 
   grass.TickInterval能否改大
 
+  由于我们是一关一关的游戏，，有些地形块是不是根本不需要加载GrassData。。
+
 - lighting 部分能否只保留Static shadow？
-- 地形Component的渲染顺序 能否控制？现在是零散插在Mesh渲染中间的
-- WeightMap是RGBA8格式，能换成有压缩的格式么？（好像不行？第一张那个Normal还放在里面，Normal有必要放在那里面么，不能放在顶点Normal里么）
+
+- WeightMap是RGBA8格式，能换成有压缩的格式么？（好像不行？第一张那个Normal还放在里面，Normal有必要放在那里面么，不能放在顶点Normal里么，还导致有些地形块要两张WeightMap）
+
+- 地形Component的渲染顺序 能否控制？现在是零散插在Mesh渲染中间的(不行吧)
+
 - 地形不能烘焙成静态模型么？landscape做编辑用，烘焙的静态模型和Texture做渲染用，能省掉地形的tick，压缩解压缩，顶点着色器和地形 Texture等开销（切换lod可能会跳，physics Material、步迹系统可能受影响）
 
 ### Reference
