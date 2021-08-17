@@ -44,11 +44,13 @@ ULandscapeComponent::GeneratePlatformVertexData为Mobile生成了PlatformData，
 
 PC使用顶点纹理来有效地存储高度和法线数据并计算 LOD 过渡，移动设备使用固定顶点和索引缓冲区。
 
+地形块的上下左右邻居信息由全局变量SharedSceneProxyMap保存。
+
 #### VertexData
 
 **SharedBuffer**
 
-移动端地形运行时渲染数据由FLandscapeComponentSceneProxy::CreateRenderThreadResources()创建，填充在FLandscapeSharedBuffers里。FLandscapeSharedBuffers中包含了
+移动端地形运行时渲染数据由FLandscapeComponentSceneProxy::CreateRenderThreadResources()创建，填充在FLandscapeSharedBuffers里。每个Component有一个SharedBuffer，用SharedBuffersKey索引保存在全局变量SharedBuffersMap中。FLandscapeSharedBuffers中包含了
 
 - Indexbuffer(每个LOD一个IndexBuffer)
 - VertexBuffer
@@ -143,7 +145,19 @@ NormalMapTexture在PC上和Heightmap的值一样，在Shader里采样的是Heigh
 
 加载场景调用FPrmitiveSceneInfo::AddStaticMeshes后调用了FLandscapeComponentSceneProxy::DrawStaticElements，从FirstLOD（可根据平台或硬件进行配置）到LastLOD分别调用FLandscapeComponentSceneProxy::GetStaticMeshElement生成MeshBatch。（相关Stat统计也发生在这里）
 
-FLandscapeRenderSystem是一个工作在Render线程的数据结构，主要是被FLandscapePersistentViewUniformBufferExtension调用，更新Lod相关的UniformBuffer数据。FLandscapePersistentViewUniformBufferExtension是一个继承IPersistentViewUniformBufferExtension的UB扩展，在FMobileSceneRenderer中，会调用Scene->UniformBuffers.UpdateViewUniformBuffer，遍历所有UB扩展执行BeginRenderView函数，进行UB数据更新。FLandscapeRenderSystem在RecreateBuffer中将ComputeSectionPerViewParameters异步计算好的数据拷到UniformBuffer中。
+FLandscapeRenderSystem是一个工作在Render线程的数据结构，每个Component有一个，用FLandscapeKey作为索引保存在全局变量LandscapeRenderSystems（TMap）中。主要是被FLandscapePersistentViewUniformBufferExtension调用，更新Lod相关的UniformBuffer数据。FLandscapePersistentViewUniformBufferExtension是一个继承IPersistentViewUniformBufferExtension的UB扩展，在FMobileSceneRenderer中，会调用Scene->UniformBuffers.UpdateViewUniformBuffer，遍历所有UB扩展执行BeginRenderView函数，进行UB数据更新。FLandscapeRenderSystem在RecreateBuffer中将ComputeSectionPerViewParameters异步计算好的数据拷到UniformBuffer中。
+
+```cpp
+//主线程渲染循环
+FMobileSceneRenderer::Render
+FMobileSceneRenderer::InitViews
+FPersistentUniformBuffers::UpdateViewUniformBuffer
+FLandscapePersistentViewUniformBufferExtension::BeginRenderView
+FLandscapeRenderSystem::BeginRenderView
+FLandscapeRenderSystem::RecreateBuffers//更新UniformBuffer
+```
+
+
 
 #### 顶点着色器
 
@@ -175,17 +189,24 @@ vertexPosition = lerp(
 CalcLOD方法以在Section内归一化的坐标xy，计算当前点向上下左右四个块的LOD的插值。以两条对角线将正方形的Section分割为4块的话，可以通过xy的值判断当前点属于哪一块，据此返回计算的LOD的值。
 
 #### 材质
+可以添加Landscape Material Override，为每个LOD层级指定材质。
+可以勾选UseDynamicMaterialInstance来给每个Component生成一个MID，可以创造踩雪等效果。
+UpdateMaterialIstance_internal中实际给每个Component生成了一个ULandscapeMaterialInstanceConstant
 
-Components共用一个材质。地形没有材质LOD，通过地形LOD、World Composition和Level LOD减少性能
+FLandscapeComponentSceneProxy中材质相关的主要数据结构是LODIndexToMaterialIndex（TMap<int,int>)和AvailableMaterials(材质数组）。
 
+RenderThread中，FLandscapeComponentSceneProxy::GetStaticMeshElement中根据LODIndexToMaterialIndex数组索引了当前Lod需要的MaterialIndex。并以此为下标从AvailableMaterials中取值。
 
+LODIndexToMaterialIndex通过ULandscapeComponent::UpdateMaterialInstances_Internal更新，所有可能用到的材质都会放在一起，放在MaterialInstances(PC)或MobileMaterialInterfaces（Mobile)中，通过LODIndexToMaterialIndex索引每一级LOD对应的在Material数组里的Index。LODIndexToMaterialIndex保存MaxLOD以下的所有LOD层级的MaterialIndex信息，有值的最后一级材质会自动往后面的LOD层级顺延。 FLandscapeComponentSceneProxy构造时由ULandscapeComponent的同名变量赋值得到。
+
+AvailableMaterials也是在FLandscapeComponentSceneProxy构造函数中，从ULandscapeComponent的MobileMaterialInterfaces中取值。MobileMaterialInterfaces在ULandscapeComponent的GeneratePlatformPixelData中更新，如果面板上改动了材质，会通过PostEditChangeProperty最终调用到GeneratePlatformPixelData。
+
+地形材质中的Layer节点应该是通过ULandscapeComponent::GetCombinationMaterial来构建和Material的联系。
 
 FLandscapeComponentMaterialOverride?
 
 #### LOD
-
-lod数是SubsectionSizeQuads以2为底的对数，即如果15*15个Quads构成一个section，NumLod为log(2,16)=4。这个值作为MaxLod值，在FLandscapeComponentSceneProxy构造时就写好了，
-
+lod数是SubsectionSizeQuads以2为底的对数，即如果15*15个Quads构成一个section，NumLod为log(2,16)=4。这个值作为MaxLod值，在FLandscapeComponentSceneProxy构造时就写好了.
 LOD参数在ALandscape的Detail窗口中指定：
 
 - LOD0ScreenSize:直观的看，近处的地块LOD的程度吧
@@ -206,7 +227,7 @@ FLandscapeRenderSystem中的SectionLODSettings为每个Section保存了一个LOD
 
 有视锥剔除，开着软光栅的话也是能剃掉自己的（切换pc/es3.1，用freezerendering能看出来），将地形的Occluder Geometry Lod设为0以上就行
 
-并不是预计算可视性volume能剃掉的东西。。可能因为Landscape被认为是动态物体
+并不是预计算可视性volume能剃掉的东西
 
 render setmesh draw time
 
@@ -237,8 +258,6 @@ FAsyncGrassBuilder用Halton算法或jitter方法（命令行可配置）生成Gr
 
 PIE模式下FLandscapeSharedBuffers构造时，会通过CreateGrassIndexBuffer创建一个草的IndexBuffer。FLandscapeComponentSceneProxy::CreateRenderThreadResources中也是将这个indexBuffer提交到GrassMeshBatch的。
 
-#### 渲染
-
 ALandscapeProxy::UpdateGrass函数中从LandscapeComponent的MeshMapBuildData中取出地形的Lightmap和ShadowMap并赋给草的HISM的OverrideMapBuildData。
 
 - GGrassDiscardDataOnLoad？
@@ -250,6 +269,8 @@ ALandscapeProxy::UpdateGrass函数中从LandscapeComponent的MeshMapBuildData中
 > - grass.CullSubsections 按SubSection剔除还是按Landscape Component剔除？
 
 ### 地形挖洞
+
+- 材质里连Landscape VisibilityMask节点到OpacityMask
 
 （实际上并不是
 
@@ -285,11 +306,13 @@ TexCoordOffsetParameter
 
 - LastLOD能设置吗?不是很行，值的填充在FLandscapeComponentSceneProxy中
 
-- landscapeRendersystem和proxy什麼關係呢
+- landscapeRendersystem和proxy什么关系呢,ALandscapeProxy和component的proxy什么关系呢
 
-- 为什么每帧都要RecreateBuffers呢
+- 为什么每帧都要RecreateBuffers呢？因为要更新UniformBuffer参数
 
 - LODIndexToMaterialIndex?UpdateMaterialInstances_Internal?
+
+- Landscape VisibilityMask内部是什么，为什么可以无视材质实例的BlendMode Override？ 因为 ALandscape::PostEditChangeProperty中把MaterailInstance的bOverride_BlendMode给设成false了
 
 - 为什么有个图总是传两遍？
 
@@ -299,19 +322,7 @@ TexCoordOffsetParameter
 
 ![image-20210810202826489](E:\文件\SophisticatedLibrary\Unreal\Unreal Landscape.assets\image-20210810202826489.png)
 
-//主线程渲染循环
-FMobileSceneRenderer::Render
-FMobileSceneRenderer::InitViews
-FPersistentUniformBuffers::UpdateViewUniformBuffer
-FLandscapePersistentViewUniformBufferExtension::BeginRenderView
-FLandscapeRenderSystem::BeginRenderView
-FLandscapeRenderSystem::RecreateBuffers
-    
-//渲染线程
-FMeshDrawCommandPassSetupTask::AnyThreadTask
-GenerateDynamicMeshDrawCommands
-FMeshPassProcessor::BuildMeshDrawCommands
-FLandscapeVertexFactoryMobileVertexShaderParameters::GetElementShaderBindings//在这里传递UniformBuffer参数
+
 
 ### p6
 
@@ -333,7 +344,7 @@ FLandscapeVertexFactoryMobileVertexShaderParameters::GetElementShaderBindings//�
 
 - 地形Component的渲染顺序 能否控制？现在是零散插在Mesh渲染中间的(不行吧)
 
-- 地形不能烘焙成静态模型么？landscape做编辑用，烘焙的静态模型和Texture做渲染用，能省掉地形的tick，压缩解压缩，顶点着色器和地形 Texture等开销（切换lod可能会跳，physics Material、步迹系统可能受影响）
+- 地形不能烘焙成静态模型么？landscape做编辑用，烘焙的静态模型和Texture做渲染用，能省掉地形的tick，压缩解压缩，顶点着色器和地形 Texture等开销（切换lod可能会跳，physics Material、步迹系统可能受影响，可是远处也不需要那些啊。。）
 
 ### Reference
 
