@@ -100,7 +100,7 @@ IBL从Cubemap中采集数据，将立方体贴图的每个像素视为光源，�
 
 ### LightMass 光照烘焙
 
-是一个类似v-ray的渲染器，负责全局光照，分布式渲染，烘焙光照贴图等，在ue中通过build lighting only使用。Lightmass中只导入静态的场景物体，其它物体对于Lightmass来说不存在。目前用的是CPULightmass，效果较好且有联机编译，GPUlightmass是unreal插件。
+是一个类似v-ray的渲染器，负责全局光照，分布式渲染，烘焙光照贴图等，在ue中通过build lighting only使用。Lightmass中只导入静态的场景物体，其它物体对于Lightmass来说不存在。目前用的是CPULightmass，效果较好且有联机编译。GPUlightmass是unreal插件。
 
 
 
@@ -139,6 +139,18 @@ Build Lighting方法：
 https://blog.uwa4d.com/archives/Study_unreal4_Rendering_4.html?utm_source=wechat_session&utm_medium=social&utm_oi=76593846288384
 
 https://zhuanlan.zhihu.com/p/69284248
+
+**光照烘焙设置**
+
+反射光会拾取底层材质的漫反射颜色（Color Bleeding），材质、Primitive或Level上有渗色强度控制：
+
+![img](Light&Shadow.assets/1628233020489-fbf5a859-0ca6-452b-8c8a-5a3b9e336f6e.png)
+
+Emissive渗色强度
+
+![img](Light&Shadow.assets/1628244744408-63ea9e3a-0fa8-404e-a9f2-4bf2600ca06f.png)
+
+
 
 **直接光照烘焙**
 

@@ -1,4 +1,4 @@
-### Landscape Basic
+## Landscape Basic
 
 一个Component有1或4个section，每个Section有2^n-1个quad(顶点数是2^n)，Quad是最小单元格，默认一个1米，除非改了Scale。地形以Section为单位进行LOD，如果Sectionsde ScreenSize差异不大，会自动合并Drawcall。Component是渲染单位，每个component有一个高度图纹理，因此顶点数必须是2的幂。相邻Component边缘的共享顶点会复制一份，因此考虑每个Component中的顶点数量是有意义的。较小的component大小可实现更快的LOD过渡，也可实现更多地形的遮挡，但是对于一个固定大小的地形，component越小，所需要的component越多，使用更少的component通常可以获得更好的性能。
 
@@ -12,7 +12,7 @@ Edit layers需要在Details面板打开Enable edit layers。
 
 Unreal使用 -256 到 255.992 (cm)之间的值计算高度图的高度，并以 16 位精度存储，然后将该值乘以地形的Scale.Z
 
-### 地形编辑
+## 地形编辑
 
 地形编辑器主要逻辑在LandscapeEdit.cpp。编辑时每个Component的数据存储在 ULandscapeComponent::PlatformData中。PlatformData是压缩的顶点数据，其中存储的顶点数据格式是FLandscapeMobileVertex，每个顶点对应一个FLandscapeMobileVertex：
 
@@ -30,7 +30,7 @@ ULandscapeComponent::GeneratePlatformVertexData为Mobile生成了PlatformData，
   MobileWeightmapTextures??
   ```
 
-#### 地形混合方式
+### 地形混合方式
 
 - 基于权重：每个layer的颜色直接乘以该层权重值，然后再依次把所有算好的颜色值叠加一起
 - 基于Height：在每层原始权重的基础上再叠加上一个来自与颜色图匹配的高度图的灰度值，后面会做个重新的归一化，这样就能保证输出的颜色亮度不会超过颜色纹理中的最高亮度。由于Weightmap分辨率只能与顶点数保持一致，这种混合方法比较能提升混合的细节。
@@ -38,7 +38,7 @@ ULandscapeComponent::GeneratePlatformVertexData为Mobile生成了PlatformData，
 
 编辑器中在对weightmap修改后，系统会做一个简单的判断，如果发现该层的权重值都变为零时，就把当前层移除掉。接着它会更新这个component的材质实例，根据当前的layer的使用情况生成对应的shader变体，假如有新的一层添加进来也会做同样的处理。
 
-### 地形数据
+## 地形数据
 
 总的来讲地形的信息都是编辑后保存时序列化到磁盘上，渲染时反序列化出来（PlatformData)使用。
 
@@ -46,7 +46,7 @@ PC使用顶点纹理来有效地存储高度和法线数据并计算 LOD 过渡�
 
 地形块的上下左右邻居信息由全局变量SharedSceneProxyMap保存。
 
-#### VertexData
+### VertexData
 
 **SharedBuffer**
 
@@ -119,7 +119,13 @@ END_GLOBAL_SHADER_PARAMETER_STRUCT()
 
 这些Uniform参数每帧在FLandscapeRenderSystem::RecreateBuffers中向Render线程中的内存拷贝。
 
-#### Pixel Data
+**OccluderMesh**
+
+应该是生成了一个用于软光栅剔除其他Mesh的LODMesh。
+
+在GeneratePlatformVertexData里用第一级Lod（具体使用哪级可以在ALandscape的Occluder Geometry LOD属性中配置）的顶点position填充了occluderVertices，应该也是序列化到PlatformData里，创建FLandscapeMobileRenderData的时候，从PlatformData里反序列化出来，保存到了MobileRenderData.OccluderVerticesSP。随后FLandscapeComponentSceneProxyMobile::CreateRenderThreadResources中，创建FLandscapeSharedBuffers的时候生成了OccluderVertices的indices信息，保存在FLandscapeSharedBuffers::OccluderIndicesSP中。
+
+### Pixel Data
 
 在PostEditChangeProperty中调用了ULandscapeComponent::GeneratePlatformPixelData，因为更换材质可能涉及WeightMap的重新排布。
 
@@ -135,13 +141,29 @@ NormalMapTexture在PC上和Heightmap的值一样，在Shader里采样的是Heigh
 
 开启Generate Mesh Distance Field和Generate Landscape Real-time GI Data的时候由系统生成，不能手动赋值。PerComponent一张图，分辨率非常低。
 
-#### OccluderMesh
 
-应该是生成了一个用于软光栅剔除其他Mesh的LODMesh。
 
-在GeneratePlatformVertexData里用第一级Lod（具体使用哪级可以在ALandscape的Occluder Geometry LOD属性中配置）的顶点position填充了occluderVertices，应该也是序列化到PlatformData里，创建FLandscapeMobileRenderData的时候，从PlatformData里反序列化出来，保存到了MobileRenderData.OccluderVerticesSP。随后FLandscapeComponentSceneProxyMobile::CreateRenderThreadResources中，创建FLandscapeSharedBuffers的时候生成了OccluderVertices的indices信息，保存在FLandscapeSharedBuffers::OccluderIndicesSP中。
+### 材质
 
-### 地形渲染
+可以添加Landscape Material Override，为每个LOD层级指定材质。
+可以勾选UseDynamicMaterialInstance来给每个Component生成一个MID，可以创造踩雪等效果。
+UpdateMaterialIstance_internal中实际给每个Component生成了一个ULandscapeMaterialInstanceConstant
+
+**主要数据结构及其填充**
+
+FLandscapeComponentSceneProxy中材质相关的主要数据结构是LODIndexToMaterialIndex（TMap<int,int>)和AvailableMaterials(材质数组）。
+
+RenderThread中，FLandscapeComponentSceneProxy::GetStaticMeshElement中根据LODIndexToMaterialIndex数组索引了当前Lod需要的MaterialIndex。并以此为下标从AvailableMaterials中取值。
+
+**LODIndexToMaterialIndex**通过ULandscapeComponent::UpdateMaterialInstances_Internal更新，所有可能用到的材质都会放在一起，放在MaterialInstances(PC)或MobileMaterialInterfaces（Mobile)中，通过LODIndexToMaterialIndex索引每一级LOD对应的在Material数组里的Index。LODIndexToMaterialIndex保存MaxLOD以下的所有LOD层级的MaterialIndex信息，有值的最后一级材质会自动往后面的LOD层级顺延。 FLandscapeComponentSceneProxy构造时由ULandscapeComponent的同名变量赋值得到。
+
+**AvailableMaterials**也是在FLandscapeComponentSceneProxy构造函数中，从ULandscapeComponent的MobileMaterialInterfaces中取值。MobileMaterialInterfaces在ULandscapeComponent的GeneratePlatformPixelData中更新，如果面板上改动了材质，会通过PostEditChangeProperty最终调用到GeneratePlatformPixelData。
+
+根据每块地形用的Layer数不同、本块地形上是否有洞，LOD层级等信息，ULandscapeComponent::GetCombinationMaterial会生成使用了不同的材质变体，保存在ALandscapeProxy::MaterialInstanceConstantMap中。地形材质中的Layer节点应该也是在这里构建和Material的联系。
+
+
+
+## 地形渲染
 
 加载场景调用FPrmitiveSceneInfo::AddStaticMeshes后调用了FLandscapeComponentSceneProxy::DrawStaticElements，从FirstLOD（可根据平台或硬件进行配置）到LastLOD分别调用FLandscapeComponentSceneProxy::GetStaticMeshElement生成MeshBatch。（相关Stat统计也发生在这里）
 
@@ -159,7 +181,7 @@ FLandscapeRenderSystem::RecreateBuffers//更新UniformBuffer
 
 
 
-#### 顶点着色器
+### 顶点着色器
 
 LandscapeVertexFactory.ush
 
@@ -188,24 +210,7 @@ vertexPosition = lerp(
 
 CalcLOD方法以在Section内归一化的坐标xy，计算当前点向上下左右四个块的LOD的插值。以两条对角线将正方形的Section分割为4块的话，可以通过xy的值判断当前点属于哪一块，据此返回计算的LOD的值。
 
-#### 材质
-可以添加Landscape Material Override，为每个LOD层级指定材质。
-可以勾选UseDynamicMaterialInstance来给每个Component生成一个MID，可以创造踩雪等效果。
-UpdateMaterialIstance_internal中实际给每个Component生成了一个ULandscapeMaterialInstanceConstant
-
-FLandscapeComponentSceneProxy中材质相关的主要数据结构是LODIndexToMaterialIndex（TMap<int,int>)和AvailableMaterials(材质数组）。
-
-RenderThread中，FLandscapeComponentSceneProxy::GetStaticMeshElement中根据LODIndexToMaterialIndex数组索引了当前Lod需要的MaterialIndex。并以此为下标从AvailableMaterials中取值。
-
-LODIndexToMaterialIndex通过ULandscapeComponent::UpdateMaterialInstances_Internal更新，所有可能用到的材质都会放在一起，放在MaterialInstances(PC)或MobileMaterialInterfaces（Mobile)中，通过LODIndexToMaterialIndex索引每一级LOD对应的在Material数组里的Index。LODIndexToMaterialIndex保存MaxLOD以下的所有LOD层级的MaterialIndex信息，有值的最后一级材质会自动往后面的LOD层级顺延。 FLandscapeComponentSceneProxy构造时由ULandscapeComponent的同名变量赋值得到。
-
-AvailableMaterials也是在FLandscapeComponentSceneProxy构造函数中，从ULandscapeComponent的MobileMaterialInterfaces中取值。MobileMaterialInterfaces在ULandscapeComponent的GeneratePlatformPixelData中更新，如果面板上改动了材质，会通过PostEditChangeProperty最终调用到GeneratePlatformPixelData。
-
-地形材质中的Layer节点应该是通过ULandscapeComponent::GetCombinationMaterial来构建和Material的联系。
-
-FLandscapeComponentMaterialOverride?
-
-#### LOD
+### LOD
 lod数是SubsectionSizeQuads以2为底的对数，即如果15*15个Quads构成一个section，NumLod为log(2,16)=4。这个值作为MaxLod值，在FLandscapeComponentSceneProxy构造时就写好了.
 LOD参数在ALandscape的Detail窗口中指定：
 
@@ -223,7 +228,7 @@ FLandscapeRenderSystem中的SectionLODSettings为每个Section保存了一个LOD
 > - MobileLodBias：移动端的lod bias
 > - MobileLandscapeLodBias：可以运行时根据特定设备执行额外偏差
 
-#### 剔除
+### 剔除
 
 有视锥剔除，开着软光栅的话也是能剃掉自己的（切换pc/es3.1，用freezerendering能看出来），将地形的Occluder Geometry Lod设为0以上就行
 
@@ -233,13 +238,13 @@ render setmesh draw time
 
 CreateOccluderIndexBuffer
 
-### 地形草
+## 地形草
 
 地形草的hism是在游戏运行时构建的，并不会序列化到资产文件里。LandscapeComponent::PostLoad时序列化出来的是GrassData(FLandscapeComponentGrassData)，只保存最基本的地形的HeightMapMip和Weightmap，并不保存Instance信息。weightMap帮助确定instance的位置，heightmap帮助instance对齐地形表面的高度和斜率。GrassData在保存地形编辑结果时(ALandscapeProxy::PreSave)，通过调用ALandscapeProxy::BuildGrassMaps生成了GrassData的HeightMip和WeightMap。
 
 [Unreal Engine的地形草管理系统的缺陷分析报告](https://zhuanlan.zhihu.com/p/149771853)
 
-#### 草HISM生成
+### 草HISM生成
 
 ```cpp
 //update grass调用堆栈
@@ -268,7 +273,7 @@ ALandscapeProxy::UpdateGrass函数中从LandscapeComponent的MeshMapBuildData中
 > - GuardBand是草消失逐渐下去那条带吗
 > - grass.CullSubsections 按SubSection剔除还是按Landscape Component剔除？
 
-### 地形挖洞
+## 地形挖洞
 
 - 材质里连Landscape VisibilityMask节点到OpacityMask
 
@@ -278,7 +283,7 @@ ALandscapeProxy::UpdateGrass函数中从LandscapeComponent的MeshMapBuildData中
 
 HoleData（FLandscapeMobileHoleData）是提前生成好序列化起来的，反序列化后保存在FLandscapeComponentSceneProxyMobile::MobileRenderData里。
 
-### 问题
+## 问题
 
 TexCoordOffsetParameter
 
